@@ -358,35 +358,77 @@ Module.preRun = Module.preRun || [ ];
         console.log(s);
     }
 
-    async function loadGameZip() {
 
-        try {
-            let response = await fetch(window.gameZipURL);
+async function loadGameZip() {
+    let f = null;
+
+    try {
+        const parts = window.gameZipParts;
+
+        if (!parts || parts.length !== 10) {
+            throw new Error("Expected 10 game ZIP parts.");
+        }
+
+        // Progress is measured in completed parts.
+        gameZipSize = parts.length;
+        gameZipDownloaded = 0;
+
+        // Create the reconstructed ZIP in Ren'Py's filesystem.
+        f = FS.open('/game.zip', 'w');
+
+        for (let i = 0; i < parts.length; i++) {
+            printMessage(`Downloading game data: part ${i + 1}/10`);
+
+            const response = await fetch(parts[i]);
 
             if (!response.ok) {
-                reportError("Could not load game.zip: " + response.status + " " + response.statusText);
+                throw new Error(
+                    `Part ${i + 1} failed: HTTP ${response.status}`
+                );
             }
 
-            gameZipSize = parseInt(response.headers.get('Content-Length'), 10);
-            if(Number.isNaN(gameZipSize)) gameZipSize = 0;
+            // Stream each part directly into the ZIP file.
+            if (response.body) {
+                const reader = response.body.getReader();
 
-            let reader = await response.body.getReader();
+                while (true) {
+                    const { done, value } = await reader.read();
 
-            let f = FS.open('/game.zip', 'w');
+                    if (done) break;
 
-            while (true) {
-
-                let { done, value } = await reader.read();
-
-                if (done) {
-                    break;
+                    FS.write(f, value, 0, value.length);
                 }
+            } else {
+                const buffer = await response.arrayBuffer();
+                const data = new Uint8Array(buffer);
 
-                FS.write(f, value, 0, value.length);
-                gameZipDownloaded += value.length;
-
-                updateDownloadProgress();
+                FS.write(f, data, 0, data.length);
             }
+
+            gameZipDownloaded++;
+            updateDownloadProgress();
+
+            console.log(`Downloaded game part ${i + 1}/10`);
+        }
+
+        FS.close(f);
+        f = null;
+
+        printMessage("Game archive reconstructed successfully!");
+
+        console.log("Complete game.zip written to Ren'Py filesystem.");
+
+    } catch (e) {
+        if (f !== null) {
+            try {
+                FS.close(f);
+            } catch (_) {}
+        }
+
+        reportError("Could not download or reconstruct game.zip", e);
+    }
+}
+
 
             FS.close(f);
 
